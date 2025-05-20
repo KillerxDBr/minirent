@@ -41,10 +41,14 @@
 #define MINIRENT_H_
 
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include <errhandlingapi.h>
+#include <fileapi.h>
+#include <handleapi.h>
+#include <stringapiset.h>
+#include <winerror.h>
 
 struct dirent
 {
@@ -64,24 +68,53 @@ int closedir(DIR *dirp);
 struct DIR
 {
     HANDLE hFind;
-    WIN32_FIND_DATAA data;
+    WIN32_FIND_DATAW data;
     struct dirent *dirent;
 };
 
 DIR *opendir(const char *dirpath)
 {
-    assert(dirpath);
+    assert(dirpath != NULL);
+    if (!(*dirpath)) {
+        errno = ENOENT;
+        return NULL;
+    }
 
-    char buffer[MAX_PATH+1];
+    char buffer[MAX_PATH + 1];
+    wchar_t wbuffer[MAX_PATH + 1];
     snprintf(buffer, MAX_PATH, "%s\\*", dirpath);
 
-    DIR *dir = (DIR*)calloc(1, sizeof(DIR));
+    DIR *dir = (DIR *)calloc(1, sizeof(DIR));
 
-    dir->hFind = FindFirstFileA(buffer, &dir->data);
+    SetLastError(0);
+    if (MultiByteToWideChar(CP_UTF8, 0, buffer, -1, wbuffer, MAX_PATH+1) == 0) {
+        switch (GetLastError()) {
+        case ERROR_INSUFFICIENT_BUFFER:
+            errno = ENAMETOOLONG;
+            break;
+        case ERROR_INVALID_FLAGS:
+        case ERROR_INVALID_PARAMETER:
+            errno = EINVAL;
+            break;
+        case ERROR_NO_UNICODE_TRANSLATION:
+            errno = EILSEQ;
+            break;
+        default:
+            errno = ENOSYS;
+            break;
+        }
+        goto fail;
+    }
+
+    dir->hFind = FindFirstFileW(wbuffer, &dir->data);
     if (dir->hFind == INVALID_HANDLE_VALUE) {
         // TODO: opendir should set errno accordingly on FindFirstFile fail
         // https://docs.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror
-        errno = ENOSYS;
+        DWORD err = GetLastError();
+        if(err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)
+            errno = ENOENT;
+        else
+            errno = ENOSYS;
         goto fail;
     }
 
@@ -97,12 +130,12 @@ fail:
 
 struct dirent *readdir(DIR *dirp)
 {
-    assert(dirp);
+    assert(dirp != NULL);
 
     if (dirp->dirent == NULL) {
-        dirp->dirent = (struct dirent*)calloc(1, sizeof(struct dirent));
+        dirp->dirent = (struct dirent *)calloc(1, sizeof(struct dirent));
     } else {
-        if(!FindNextFileA(dirp->hFind, &dirp->data)) {
+        if(!FindNextFileW(dirp->hFind, &dirp->data)) {
             if (GetLastError() != ERROR_NO_MORE_FILES) {
                 // TODO: readdir should set errno accordingly on FindNextFile fail
                 // https://docs.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror
@@ -115,17 +148,37 @@ struct dirent *readdir(DIR *dirp)
 
     memset(dirp->dirent->d_name, 0, sizeof(dirp->dirent->d_name));
 
-    strncpy(
-        dirp->dirent->d_name,
-        dirp->data.cFileName,
-        sizeof(dirp->dirent->d_name) - 1);
+    // Set errno or just crash if conversion failed???
+#if 1
+    assert(WideCharToMultiByte(CP_UTF8, 0, dirp->data.cFileName, -1, dirp->dirent->d_name, sizeof(dirp->dirent->d_name), NULL, NULL) != 0);
+#else
+    SetLastError(0);
+    if (WideCharToMultiByte(CP_UTF8, 0, dirp->data.cFileName, -1, dirp->dirent->d_name, sizeof(dirp->dirent->d_name), NULL, NULL) == 0) {
+        switch (GetLastError()) {
+        case ERROR_INSUFFICIENT_BUFFER:
+            errno = ENAMETOOLONG;
+            break;
+        case ERROR_INVALID_FLAGS:
+        case ERROR_INVALID_PARAMETER:
+            errno = EINVAL;
+            break;
+        case ERROR_NO_UNICODE_TRANSLATION:
+            errno = EILSEQ;
+            break;
+        default:
+            errno = ENOSYS;
+            break;
+        }
+        return NULL;
+    }
+#endif
 
     return dirp->dirent;
 }
 
 int closedir(DIR *dirp)
 {
-    assert(dirp);
+    assert(dirp != NULL);
 
     if(!FindClose(dirp->hFind)) {
         // TODO: closedir should set errno accordingly on FindClose fail
