@@ -43,12 +43,10 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-#include <errhandlingapi.h>
-#include <fileapi.h>
-#include <handleapi.h>
-#include <stringapiset.h>
-#include <winerror.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 struct dirent
 {
