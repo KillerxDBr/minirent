@@ -52,7 +52,7 @@
 
 struct dirent
 {
-    char d_name[MAX_PATH+1];
+    char d_name[MAX_PATH];
 };
 
 typedef struct DIR DIR;
@@ -80,14 +80,21 @@ DIR *opendir(const char *dirpath)
         return NULL;
     }
 
-    char buffer[MAX_PATH + 1];
-    wchar_t wbuffer[MAX_PATH + 1];
-    snprintf(buffer, MAX_PATH, "%s\\*", dirpath);
+    int charCount;
+    char buffer[MAX_PATH];
+    wchar_t wBuffer[MAX_PATH];
+
+    charCount = snprintf(buffer, MAX_PATH, "%s\\*", dirpath);   // snprintf return DONT count the NULL terminator
+    if(charCount < 1 || charCount >= MAX_PATH) {
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
 
     DIR *dir = (DIR *)calloc(1, sizeof(DIR));
 
     SetLastError(0);
-    if (MultiByteToWideChar(CP_UTF8, 0, buffer, -1, wbuffer, MAX_PATH+1) == 0) {
+    charCount = MultiByteToWideChar(CP_UTF8, 0, buffer, -1, wBuffer, MAX_PATH);
+    if (charCount < 1 || charCount > MAX_PATH) {                // MultiByteToWideChar return count the NULL terminator
         switch (GetLastError()) {
         case ERROR_INSUFFICIENT_BUFFER:
             errno = ENAMETOOLONG;
@@ -106,7 +113,7 @@ DIR *opendir(const char *dirpath)
         goto fail;
     }
 
-    dir->hFind = FindFirstFileW(wbuffer, &dir->data);
+    dir->hFind = FindFirstFileW(wBuffer, &dir->data);
     if (dir->hFind == INVALID_HANDLE_VALUE) {
         // TODO: opendir should set errno accordingly on FindFirstFile fail
         // https://docs.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror
@@ -149,12 +156,15 @@ struct dirent *readdir(DIR *dirp)
     memset(dirp->dirent->d_name, 0, sizeof(dirp->dirent->d_name));
 
     // Set errno or just crash if conversion failed???
-#if 1
-    assert(WideCharToMultiByte(CP_UTF8, 0, dirp->data.cFileName, -1, dirp->dirent->d_name, sizeof(dirp->dirent->d_name), NULL, NULL) != 0);
-#else
     SetLastError(0);
-    if (WideCharToMultiByte(CP_UTF8, 0, dirp->data.cFileName, -1, dirp->dirent->d_name, sizeof(dirp->dirent->d_name), NULL, NULL) == 0) {
-        switch (GetLastError()) {
+    int charCount = WideCharToMultiByte(CP_UTF8, 0, dirp->data.cFileName, -1, dirp->dirent->d_name, sizeof(dirp->dirent->d_name), NULL, NULL);
+
+#if 1
+    assert((charCount > 0 && charCount <= (int)sizeof(dirp->dirent->d_name)));  // WideCharToMultiByte return count the NULL terminator
+#else
+    if (charCount < 1 || charCount > (int)sizeof(dirp->dirent->d_name)) {       // WideCharToMultiByte return count the NULL terminator
+        switch (GetLastError())
+        {
         case ERROR_INSUFFICIENT_BUFFER:
             errno = ENAMETOOLONG;
             break;
